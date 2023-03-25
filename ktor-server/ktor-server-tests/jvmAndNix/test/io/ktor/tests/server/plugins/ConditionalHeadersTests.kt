@@ -5,6 +5,7 @@
 
 package io.ktor.tests.server.plugins
 
+import io.ktor.client.plugins.cache.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -14,12 +15,14 @@ import io.ktor.server.plugins.conditionalheaders.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.testing.*
+import io.ktor.util.*
 import kotlinx.coroutines.*
 import kotlin.test.*
 
 class ETagsTest {
     private fun withConditionalApplication(body: suspend ApplicationTestBuilder.() -> Unit) = testApplication {
         application {
+
             install(ConditionalHeaders) {
                 version { _, _ -> listOf(EntityTagVersion("tag1")) }
             }
@@ -85,6 +88,43 @@ class ETagsTest {
         }
         assertEquals(HttpStatusCode.NotModified, result.status)
         assertEquals("\"tag1\"", result.headers[HttpHeaders.ETag])
+    }
+
+    @Test
+    fun testIfNoneMatchConditionAcceptedAlt(): Unit = testApplication {
+
+        val client = createClient {
+            install(HttpCache)
+        }
+
+        val text = """the answer is 42"""
+
+        application {
+            routing {
+                route("a") {
+                    install(ConditionalHeaders) {
+                        version { _, outgoingContent ->
+                            if (outgoingContent is TextContent) {
+                                listOf(EntityTagVersion(etag = outgoingContent.text.encodeBase64(), weak = false))
+                            } else emptyList()
+                        }
+                    }
+                    get("b") {
+                        call.respond(HttpStatusCode.OK, text)
+                    }
+                }
+            }
+        }
+
+        val first = client.get("a/b")
+        assertEquals(expected = text.encodeBase64().quote(), actual = first.etag())
+        assertEquals(HttpStatusCode.OK, first.status)
+        assertEquals(text, first.bodyAsText())
+
+        val second = client.get("a/b")
+        assertEquals(expected = first.etag(), actual = second.request.headers[HttpHeaders.IfNoneMatch])
+        assertEquals(HttpStatusCode.NotModified, second.status)
+        assertEquals("", second.bodyAsText())
     }
 
     @Test
